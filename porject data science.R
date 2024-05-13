@@ -1,200 +1,193 @@
-library(dplyr)
 library(arules)
+library(reader)
 library(ggplot2)
 library(shiny)
 
-ui <- navbarPage(
-  title = "Data Analysis App",
-  tabPanel("Data Analysis Dashboard",
-           sidebarLayout(
-             sidebarPanel(
-               fileInput("file", "Choose CSV File",
-                         accept = c(
-                           "text/csv",
-                           "text/comma-separated-values,text/plain",
-                           ".csv")
-               ),
-               selectInput("plot_choice", "Select a Plot:",
-                           c("Payment Type Pie Chart", "Age Group Bar Chart",
-                             "Distribution of Total Spending", "Total Spending by City", "All Visualizations"))
-             ),
-             mainPanel(
-               uiOutput("dynamic_ui")
-             )
-           )),
-  tabPanel("K-Means Clustering",
-           sidebarLayout(
-             sidebarPanel(
-               numericInput("num_clusters", "Number of Clusters", value = 3, min = 2, max = 4),
-               actionButton("cluster", "Run K-Means")
-             ),
-             mainPanel(
-               dataTableOutput("cluster_table")
-             )
-           )),
-  tabPanel("Apriori Association Rule Mining",
-           sidebarLayout(
-             sidebarPanel(
-               sliderInput("support",
-                           "Support:",
-                           min = 0.001, max = 1, value = 0.01, step = 0.001),
-               sliderInput("confidence",
-                           "Confidence:",
-                           min = 0.001, max = 1, value = 0.01, step = 0.001),
-               actionButton("run_analysis", "Run Analysis")
-             ),
-             mainPanel(
-               tableOutput("rules_table")
-             )
-           ))
+ui <- fluidPage(
+  titlePanel("Customer's Data analysis"),
+  sidebarLayout(
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Data Input",
+                 fluidRow(
+                   fileInput("file", "Choose CSV File", accept = ".csv")
+                 )
+        ),
+        tabPanel("Customers' behaviour's data analysis",
+                 fluidRow(
+                   column(6, plotOutput("pie")),
+                   column(6, plotOutput("bar")),
+                   column(6, plotOutput("scatter")),
+                   column(6, plotOutput("box"))
+                 )
+        ),
+        tabPanel("Customer's clustering",
+                 sidebarLayout(
+                   sidebarPanel(
+                     numericInput("n", "Enter the number of clusters", value = 2, min = 2, max = 4)
+                   ),
+                   mainPanel(
+                     fluidRow(
+                       column(width = 6,
+                              plotOutput("Kmeans")
+                       ),
+                       column(width = 6,
+                              div(style = "max-height: 800px; margin-left: -300px;",
+                                  tableOutput("Kmeans_table")
+                              )
+                       )
+                     )
+                   )
+                 )
+        ),
+        tabPanel("Itemsets algorithm",
+                 sidebarLayout(
+                   sidebarPanel(
+                     numericInput("support", "Support", value = 0.04, min = 0, max = 1, step = 0.001),
+                     numericInput("confidence", "Confidence", value = 0.25, min = 0, max = 1, step = 0.001)
+                   ),
+                   mainPanel(
+                     tableOutput("rules_output")
+                   )
+                 )
+        )
+      )
+    ),
+    sidebarPanel(
+      # Any sidebar content that appears globally can go here
+    )
+  )
 )
 
 server <- function(input, output) {
+  
+  # Reactive expression to read the uploaded CSV file
   data <- reactive({
-    req(input$file)
-    df <- read.csv(input$file$datapath)
-    df <- unique(df)  # Remove duplicates
-    return(df)
+    req(input$file)  # Require file input
+    validate(need(input$file$datapath, "Please upload a file"))  # Validate file input
+    read.csv(input$file$datapath)
   })
   
-  output$dynamic_ui <- renderUI({
-    if (input$plot_choice == "All Visualizations") {
-      fluidRow(
-        plotOutput("payment_type_plot"),
-        plotOutput("age_group_plot"),
-        plotOutput("total_spending_plot"),
-        plotOutput("city_spending_plot")
-      )
-    } else {
-      plotOutput("selected_plot")
+  observeEvent(data(), {
+    # Check if the uploaded CSV file is empty
+    if (is.null(data())) {
+      return()
     }
-  })
-  output$selected_plot <- renderPlot({
-    plot_choice <- input$plot_choice  # Store input$plot_choice in a variable
     
-    if (plot_choice == "Payment Type Pie Chart") {
-      payment_type_table <- table(data()$paymentType)
-      percentage <- paste0(round(100 * payment_type_table / sum(payment_type_table)), "%")
+    # Calculate Cash and Credit Transactions
+    CashTransactions <- sum(data()[data()$paymentType == "Cash", ]$total)
+    CreditTransactions <- sum(data()[data()$paymentType == "Credit", ]$total)
+    paymentmethods <- c(CreditTransactions, CashTransactions)
+    Percentage <- paste0(round(100 * paymentmethods / sum(paymentmethods)), "%")
+    
+    # Render Pie Chart
+    output$pie <- renderPlot({
+      ggplot(NULL, aes(x = "", y = paymentmethods, fill = c("Credit", "Cash"))) +
+        geom_bar(stat = "identity", width = 1) +
+        coord_polar(theta = "y") +
+        labs(title = "Cash/Credit Totals", fill = NULL) +
+        theme_void() +
+        scale_fill_manual(values = c("darkgreen", "darkblue")) +
+        theme(legend.position = "bottom", legend.title = element_blank()) +
+        geom_text(aes(label = Percentage), position = position_stack(vjust = 0.5))
+    })
+    
+    # Render Bar Chart
+    output$bar <- renderPlot({
+      Cities <- unique(data()$city)
+      Cityspending <- numeric(length(Cities))
+      for (i in 1:length(Cities)) {
+        Cityspending[i] <- sum(data()$total[data()$city == Cities[i]])
+      }
+      CitiesSpending <- data.frame(City = Cities, CityTotalSpending = Cityspending)
+      CitiesSpending <- CitiesSpending[order(-CitiesSpending$CityTotalSpending), ]
       
-      pie(payment_type_table, labels = percentage,
-          main = "Pie Chart of Payment Type",
-          col = c("steelblue1", "tomato"))
-      legend("bottomright", legend = c("Cash", "Credit"),
-             fill = c("steelblue1", "tomato"))
-    } else if (plot_choice == "Age Group Bar Chart") {
-      # Convert age groups to factors to maintain order
-      age_groups <- factor(cut(data()$age, breaks = c(0, 18, 35, 50, 65, 100),
-                               labels = c("0-18", "19-35", "36-50", "51-65", "66+")))
-      data_summary <- data.frame(age_groups = age_groups, total_spending = data()$rnd)
+      ggplot(CitiesSpending, aes(x = reorder(City, -CityTotalSpending), y = CityTotalSpending)) +
+        geom_bar(stat = "identity", fill = "deepskyblue") +
+        labs(title = "Each city's total spending", x = "City", y = "Total Spending") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+        scale_y_continuous(labels = scales::number_format())
+    })
+    
+    # Render Scatter Plot
+    output$scatter <- renderPlot({
+      Ages <- unique(data()$age)
+      Agespending <- numeric(length(Ages))
+      for (i in 1:length(Ages)) {
+        Agespending[i] <- sum(data()$total[data()$age == Ages[i]])
+      }
+      AgeSpending <- data.frame(Age = Ages, TotalAgeSpending = Agespending)
+      AgeSpending <- AgeSpending[order(-AgeSpending$TotalAgeSpending), ]
       
-      # Create a boxplot with colors
-      ggplot(data_summary, aes(x = age_groups, y = total_spending, fill = age_groups)) +
-        geom_boxplot() +
-        scale_fill_manual(values = c("0-18" = "red", "19-35" = "blue",
-                                     "36-50" = "green", "51-65" = "yellow", "66+" = "purple")) +
-        labs(title = "Boxplot of Age Groups", x = "Age Groups", y = "Total Spending (RND)") +
-        theme_bw()
-    } else if (plot_choice == "Distribution of Total Spending") {
-      hist(data()$rnd,
-           col = "darkblue",   # Set bar color
-           border = "lightblue",  # Set border color
-           main = "Distribution of Total Spending",  # Set title
-           xlab = "Total Spending (rnd)",  # Set x-axis label
-           ylab = "Frequency")  # Set y-axis label
-    } else if (plot_choice == "Total Spending by City") {
-      city_totals <- data() %>%
-        group_by(city) %>%
-        summarize(total = sum(total))
-      colors <- c("steelblue", "royalblue", "orange", "forestgreen", "darkred",
-                  "purple", "gold", "grey", "magenta", "darkgoldenrod")
-      ggplot_chart <- ggplot(city_totals, aes(x = reorder(city, -total), y = total)) +
-        geom_bar(stat = "identity", fill = colors[1:nrow(city_totals)]) +
-        labs(title = "Total Spending by City", x = "City", y = "Total Spent") +
-        theme_classic()
+      ggplot(AgeSpending, aes(x = Age, y = TotalAgeSpending)) +
+        geom_point(color = "black") +
+        labs(title = "Each age's total spendings", x = "Customers age", y = "Age's total spending")
+    })
+    
+    # Render Box Plot
+    output$box <- renderPlot({
+      ggplot(data(), aes(x = "", y = total)) +
+        geom_boxplot(color = "grey") +
+        labs(title = "Distribution of total spending", x = "total spending")
+    })
+    
+    # Clustering data
+    observeEvent(input$n, {
+      max_rnd <- max(data()$rnd)
+      Total <- numeric(max_rnd)
+      age <- numeric(max_rnd)
+      customer <- character(max_rnd)
       
-      ggplot_chart
-    }
-  }) 
-  
-  
-  output$payment_type_plot <- renderPlot({
-    payment_type_table <- table(data()$paymentType)
-    percentage <- paste0(round(100 * payment_type_table / sum(payment_type_table)), "%")
+      for (i in 1:max_rnd) {
+        Total[i] <- sum(data()$total[data()$rnd == i])
+        age[i] <- mean(data()$age[data()$rnd == i])
+        customer[i] <- unique(data()$customer[data()$rnd == i])
+      }
+      
+      kmeanTable <- data.frame(customer, rnd = 1:max_rnd, age, Total)
+      
+      if (input$n %in% c(2, 3, 4)) {
+        kmean <- kmeans(kmeanTable[, c("age", "Total")], centers = input$n)
+        cluster <- kmean$cluster
+        output$Kmeans <- renderPlot({
+          # Your code to plot the Kmeans results
+        })
+        output$Kmeans_table <- renderTable({
+          cbind(kmeanTable, Cluster = cluster)
+        })
+      } else {
+        output$Kmeans <- renderPlot(NULL)
+        output$Kmeans_table <- renderTable(NULL)
+      }
+    })
     
-    pie(payment_type_table, labels = percentage,
-        main = "Pie Chart of Payment Type",
-        col = c("steelblue1", "tomato"))
-    legend("bottomright", legend = c("Cash", "Credit"),
-           fill = c("steelblue1", "tomato"))
-  })
-  
-  output$age_group_plot <- renderPlot({
-    age_groups <- factor(cut(data()$age, breaks = c(0, 18, 35, 50, 65, 100),
-                             labels = c("0-18", "19-35", "36-50", "51-65", "66+")))
-    data_summary <- data.frame(age_groups = age_groups, total_spending = data()$rnd)
-    
-    # Create a boxplot with colors
-    ggplot(data_summary, aes(x = age_groups, y = total_spending, fill = age_groups)) +
-      geom_boxplot() +
-      scale_fill_manual(values = c("0-18" = "red", "19-35" = "blue",
-                                   "36-50" = "green", "51-65" = "yellow", "66+" = "purple")) +
-      labs(title = "Boxplot of Age Groups", x = "Age Groups", y = "Total Spending (RND)") +
-      theme_bw()
-  })
-  
-  output$total_spending_plot <- renderPlot({
-    hist(data()$rnd,
-         col = "darkblue",   # Set bar color
-         border = "lightblue",  # Set border color
-         main = "Distribution of Total Spending",  # Set title
-         xlab = "Total Spending (rnd)",  # Set x-axis label
-         ylab = "Frequency")  # Set y-axis label
-  })
-  
-  output$city_spending_plot <- renderPlot({
-    # 4. City Spending Bar Chart (ggplot2)
-    city_totals <- data() %>%
-      group_by(city) %>%
-      summarize(total = sum(total)) %>%
-      arrange(desc(total))
-    
-    colors <- c("steelblue", "royalblue", "orange", "forestgreen", "darkred",
-                "purple", "gold", "grey", "magenta", "darkgoldenrod")
-    
-    ggplot_chart <- ggplot(city_totals, aes(x = reorder(city, -total), y = total)) +
-      geom_bar(stat = "identity", fill = colors[1:nrow(city_totals)]) +
-      labs(title = "Total Spending by City", x = "City", y = "Total Spent") +
-      theme_classic()
-    
-    ggplot_chart
-  })
-  run_kmeans <- reactive({
-    req(data())
-    n_clusters <- input$num_clusters
-    scaled_data <- scale(data()[, c("age", "total")])
-    kmeans.results <- kmeans(scaled_data, centers = n_clusters, nstart = 20)
-    clustered_data <- cbind(data(), cluster = as.factor(kmeans.results$cluster))
-    return(clustered_data[!duplicated(clustered_data$customer), ])  # Remove duplicates based on customer
-  })
-  
-  output$cluster_table <- renderDataTable({
-    kmeans_results <- run_kmeans()
-    if (!is.null(kmeans_results)) {
-      kmeans_results[, c("customer", "age", "total", "cluster")]
-    }
-  })
-  
-  observeEvent(input$run_analysis, {
-    item <- strsplit(data()$items, ",")
-    items <- as(item, "transactions")
-    apriori_result <- apriori(items,
-                              parameter = list(supp = input$support,
-                                               conf = input$confidence,
-                                               minlen = 2))
-    output$rules_table <- renderTable({
-      as(apriori_result, "data.frame")
+    # Apriori 
+    observeEvent(c(input$confidence, input$support), {
+      if (input$confidence <= 0 || input$confidence >= 1 || input$support <= 0 || input$support >= 1) {
+        output$rules_output <- renderTable(NULL)
+      }
+      trans <- data()$items
+      temp_file <- tempfile()
+      writeLines(trans, temp_file)
+      
+      transactions <- read.transactions(temp_file, format = "basket", sep = ",")
+      
+      if (input$confidence > 0.001 && input$confidence < 1 &&
+          input$support > 0.001 && input$support < 1) {
+        
+        rules <- apriori(transactions, 
+                         parameter = list(support = input$support, 
+                                          confidence = input$confidence, 
+                                          minlen = 2))
+        
+        output$rules_output <- renderTable({
+          inspect(rules)
+        })
+      } 
     })
   })
+  
 }
 
-shinyApp(ui = ui, server=server)
+# Run the application
+shinyApp(ui = ui, server = server)
